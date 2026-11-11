@@ -189,3 +189,147 @@ def get_video_statistics(video_ids):
             }
 
     return videos
+
+
+# ============================================================
+# DETECÇÃO DE CANAIS "SHORTS ONLY"
+# ============================================================
+
+import re
+
+
+def parse_iso_duration(iso_duration):
+    """
+    Converte duração ISO 8601 (ex.: PT1M5S, PT45S) para segundos.
+    """
+    if not iso_duration:
+        return 0
+
+    match = re.match(
+        r"P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?",
+        iso_duration
+    )
+
+    if not match:
+        return 0
+
+    days, hours, minutes, seconds = (
+        int(g) if g else 0
+        for g in match.groups()
+    )
+
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
+def get_channel_recent_videos(channel_id, max_results=20):
+    """
+    Busca os vídeos mais recentes do canal (via playlist de uploads).
+
+    Retorna lista de dicts: {video_id, duration_sec, title}.
+    """
+
+    youtube = create_youtube_client()
+
+    # 1. Descobrir a playlist de uploads do canal
+    channels_resp = youtube.channels().list(
+        part="contentDetails",
+        id=channel_id
+    ).execute()
+
+    items = channels_resp.get("items", [])
+
+    if not items:
+        return []
+
+    uploads_playlist = items[0]["contentDetails"][
+        "relatedPlaylists"
+    ].get("uploads")
+
+    if not uploads_playlist:
+        return []
+
+    # 2. Buscar os últimos vídeos enviados
+    playlist_resp = youtube.playlistItems().list(
+        part="contentDetails",
+        playlistId=uploads_playlist,
+        maxResults=min(max_results, 50)
+    ).execute()
+
+    video_ids = [
+        item["contentDetails"]["videoId"]
+        for item in playlist_resp.get("items", [])
+    ]
+
+    if not video_ids:
+        return []
+
+    # 3. Buscar duração/título desses vídeos
+    videos_resp = youtube.videos().list(
+        part="contentDetails,snippet",
+        id=",".join(video_ids)
+    ).execute()
+
+    recent = []
+
+    for video in videos_resp.get("items", []):
+
+        duration_sec = parse_iso_duration(
+            video.get("contentDetails", {}).get("duration", "")
+        )
+
+        recent.append({
+            "video_id": video["id"],
+            "duration_sec": duration_sec,
+            "title": video.get("snippet", {}).get("title", "")
+        })
+
+    return recent
+
+
+def classify_channel_format(channel_id, shorts_threshold_sec=60):
+    """
+    Classifica o formato do canal analysando os vídeos recentes.
+
+    Um vídeo é considerado Short se tiver duração <= shorts_threshold_sec
+    (60s) — padrão do YouTube Shorts.
+
+    Retorna:
+        {
+            "tipo": "shorts_only" | "long" | "misto" | "desconhecido",
+            "shorts_ratio": float (0..1) ou None,
+            "shorts_count": int,
+            "total_recent": int
+        }
+    """
+
+    recent = get_channel_recent_videos(channel_id, max_results=20)
+
+    if not recent:
+        return {
+            "tipo": "desconhecido",
+            "shorts_ratio": None,
+            "shorts_count": 0,
+            "total_recent": 0
+        }
+
+    shorts_count = sum(
+        1
+        for video in recent
+        if video["duration_sec"] <= shorts_threshold_sec
+    )
+
+    ratio = shorts_count / len(recent)
+
+    if ratio >= 0.8:
+        tipo = "shorts_only"
+    elif ratio == 0:
+        tipo = "long"
+    else:
+        tipo = "misto"
+
+    return {
+        "tipo": tipo,
+        "shorts_ratio": round(ratio, 2),
+        "shorts_count": shorts_count,
+        "total_recent": len(recent)
+    }

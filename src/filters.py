@@ -49,3 +49,21 @@ def filter_channels(
         filtered[channel_id] = channel
 
     return filtered
+
+
+def is_shorts_only(channel, threshold=0.8):
+    """
+    Retorna True se o canal for classificado como "só Shorts"
+    (não precisa de thumbnail — Shorts não usam thumb personalizada
+    no feed da mesma forma que vídeos longos).
+    """
+    tipo = channel.get("tipo_canal")
+    ratio = channel.get("shorts_ratio")
+
+    if tipo == "shorts_only":
+        return True
+
+    if ratio is not None and ratio >= threshold:
+        return True
+
+    return False

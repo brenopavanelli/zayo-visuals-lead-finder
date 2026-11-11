@@ -6,10 +6,11 @@ from datetime import datetime, timedelta, timezone
 from youtube_api import (
     search_videos,
     get_channel_details,
-    get_video_statistics
+    get_video_statistics,
+    classify_channel_format
 )
 
-from filters import filter_channels
+from filters import filter_channels, is_shorts_only
 from scoring import calculate_score
 
 
@@ -90,6 +91,17 @@ REQUIRE_COUNTRY = True
 
 # Arquivo de saída
 OUTPUT_FILE = "output/leads.csv"
+
+# ============================================================
+# FILTRO DE CANAIS SHORTS-ONLY
+# ============================================================
+# Canais que postam só Shorts não precisam de thumbnail
+# (Shorts não usam thumb personalizada no feed).
+EXCLUDE_SHORTS_ONLY = True
+
+# Se >= 80% dos últimos 20 vídeos forem <= 60s, o canal é
+# classificado como "shorts_only" e excluído dos leads.
+SHORTS_RATIO_THRESHOLD = 0.8
 
 
 # ============================================================
@@ -278,6 +290,92 @@ print(
 
 
 # ============================================================
+# 5B. CLASSIFICAR FORMATO DO CANAL (SHORTS vs LONG)
+#     E EXCLUIR CANAIS SHORTS-ONLY
+# ============================================================
+
+if EXCLUDE_SHORTS_ONLY:
+
+    print()
+    print("=" * 70)
+    print(
+        "CLASSIFICANDO FORMATO DOS CANAIS "
+        "(Shorts x Long)"
+    )
+    print("=" * 70)
+
+    shorts_only_count = 0
+
+    channel_items = list(filtered_channels.items())
+
+    for i, (channel_id, channel) in enumerate(
+        channel_items, 1
+    ):
+
+        try:
+
+            format_info = classify_channel_format(
+                channel_id
+            )
+
+        except Exception as error:
+
+            print(
+                f"  [{i}/{len(channel_items)}] "
+                f"{channel.get('channel_name')}: "
+                f"erro ({error})"
+            )
+
+            format_info = {
+                "tipo": "desconhecido",
+                "shorts_ratio": None,
+                "shorts_count": 0,
+                "total_recent": 0
+            }
+
+        channel["tipo_canal"] = format_info["tipo"]
+        channel["shorts_ratio"] = format_info[
+            "shorts_ratio"
+        ]
+
+        print(
+            f"  [{i}/{len(channel_items)}] "
+            f"{channel.get('channel_name')}: "
+            f"{format_info['tipo']} "
+            f"(shorts: {format_info['shorts_count']}/"
+            f"{format_info['total_recent']})"
+        )
+
+        if is_shorts_only(
+            channel,
+            threshold=SHORTS_RATIO_THRESHOLD
+        ):
+
+            shorts_only_count += 1
+
+    # Remove canais shorts-only
+    before = len(filtered_channels)
+
+    filtered_channels = {
+        cid: ch
+        for cid, ch in filtered_channels.items()
+        if not is_shorts_only(
+            ch,
+            threshold=SHORTS_RATIO_THRESHOLD
+        )
+    }
+
+    after = len(filtered_channels)
+
+    print()
+    print(
+        f"Canais shorts-only excluídos: "
+        f"{shorts_only_count} "
+        f"({before} -> {after})"
+    )
+
+
+# ============================================================
 # 6. PEGAR VÍDEOS DOS CANAIS FILTRADOS
 # ============================================================
 
@@ -398,7 +496,13 @@ for channel_id, channel in filtered_channels.items():
             last_video_date,
 
         "score":
-            score
+            score,
+
+        "tipo_canal":
+            channel.get("tipo_canal", "desconhecido"),
+
+        "shorts_ratio":
+            channel.get("shorts_ratio") or 0
     })
 
 
@@ -437,7 +541,9 @@ fieldnames = [
     "videos_found",
     "average_views",
     "last_video_date",
-    "score"
+    "score",
+    "tipo_canal",
+    "shorts_ratio"
 ]
 
 
